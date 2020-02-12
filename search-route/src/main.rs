@@ -1,6 +1,9 @@
 //search-route.rs
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+use std::fmt;
 
 #[derive(Debug, Clone, Copy)]
 struct Pos {
@@ -24,18 +27,18 @@ impl Hash for Pos {
 }
 
 struct Node {
-    pos: Pos,
-    step: i32,
-    prev: Option<Box<Node>>,
+    pos   : Pos,
+    value : String,
+    step  : i32,
+    prev  : Option<Pos>,
 }
 
 struct GameMap {
     w     : usize,
     h     : usize,
-    hmap  : HashMap<Pos, String>,
     start : Pos,
     goal  : Pos,
-    nodes : HashMap<Pos, Node>,
+    nodes : HashMap<Pos, Rc<RefCell<Node>>>,
 }
 
 impl GameMap {
@@ -53,74 +56,77 @@ impl GameMap {
 
         let mut start = Pos {x: 0, y: 0};
         let mut goal = Pos {x: 0, y: 0};
-        let mut hmap: HashMap<Pos, String> = HashMap::new();
+        let mut nodes: HashMap<Pos, Rc<RefCell<Node>>> = HashMap::new();
         for (i, l) in rmap.iter().enumerate() {
             for (j, c) in l.iter().enumerate() {
                 let pos = Pos {x: j, y: i};
-
-                hmap.insert(pos, c.to_string()); //@@@ to_string() naze iru?
+                let mut node = Node {pos, value: c.clone(), step: -1, prev: None};
 
                 if c == "s" {
                     start = pos;
+                    node.step = 0;
                 }
                 else if c == "g" {
                     goal = pos;
                 }
+
+                nodes.insert(pos, Rc::new(RefCell::new(node)));
             }
         }
 
         GameMap {
             w,
             h,
-            hmap,
             start,
             goal,
-            nodes: HashMap::new(),
+            nodes,
         }
     }
 
-    fn goal_node(&mut self) -> Option<&Node> {
-        if self.nodes.len() == 0 {
-//@@@            let start_node = self.nodes.insert(self.start, Node {pos: self.start, step: 0, prev: None}).unwrap();
-//@@@            self.parse_nodes(&start_node);
-        }
-
+    fn goal_node(&mut self) -> Option<&Rc<RefCell<Node>>> {
+        self.parse_nodes(self.nodes[&self.start].clone());
         self.nodes.get(&self.goal)
     }
 
-    fn parse_nodes(&mut self, cur_node: &Node) {
+    fn parse_nodes(&mut self, cur_node: Rc<RefCell<Node>>) {
         let next_poses = self.next_poses(&cur_node);
+        let cur_node = cur_node.borrow();
 
         for next_pos in next_poses {
-            let next_node = self.nodes.entry(next_pos).or_insert(Node {pos: next_pos, step: -1, prev: None});
-            
-            if (*next_node).step < 0 || (*next_node).step > cur_node.step + 1 {
-                (*next_node).step = cur_node.step + 1;
-                //next_node.prev = Some(cur_node); @@@ ???
+            if let Some(next_node) = self.nodes.get(&next_pos) {
+                let mut next_node = next_node.borrow_mut();
+                if next_node.step < 0 || next_node.step > cur_node.step + 1 {
+                    next_node.step = cur_node.step + 1;
+                    next_node.prev = Some(cur_node.pos);
+                }
             }
 
-            self.parse_nodes(next_node);
+            if let Some(next_node) = self.nodes.get(&next_pos) {
+                self.parse_nodes(next_node.clone());
+            }
         }
     }
 
-    fn next_poses(&mut self, cur_node: &Node) -> Vec<Pos> {
+    fn next_poses(&self, cur_node: &Rc<RefCell<Node>>) -> Vec<Pos> {
         let mut nexts: Vec<Pos> = Vec::new();
-        
+        let cb = cur_node.borrow();
+        let cur_pos = cb.pos;
+
         for p in [[0,1],[0,-1],[1,0],[-1,0]].iter() {
-            if (cur_node.pos.x == 0 && p[0] < 0) || (cur_node.pos.y == 0 && p[1] < 0) {
+            if (cur_pos.x == 0 && p[0] < 0) || (cur_pos.y == 0 && p[1] < 0) {
                 continue;
             }
 
             let np = Pos {
-                x: ((cur_node.pos.x as i32) + p[0]) as usize,
-                y: ((cur_node.pos.y as i32) + p[1]) as usize,
+                x: ((cur_pos.x as i32) + p[0]) as usize,
+                y: ((cur_pos.y as i32) + p[1]) as usize,
             };
 
-            if self.is_valid(&np, &cur_node) {
+            if self.is_valid(&np, &cb) {
                 nexts.push(np);
             }
         }
-        
+
         nexts
     }
 
@@ -163,9 +169,9 @@ impl GameMap {
 //    }
 
     fn is_valid(&self, pos: &Pos, cur_node: &Node) -> bool {
-        match self.hmap.get(pos) {
-            Some(v) => {
-                if v == "1" {
+        match self.nodes.get(pos) {
+            Some(node) => {
+                if node.borrow().value == "1" {
                     return false;
                 }
             },
@@ -175,12 +181,35 @@ impl GameMap {
         }
 
         if let Some(p) = &cur_node.prev {
-            if p.pos.x == pos.x && p.pos.y == pos.y {
+            if p.x == pos.x && p.y == pos.y {
                 return false;
             }
         }
 
         true
+    }
+}
+
+impl fmt::Debug for GameMap {
+    // このトレイトは`fmt`が想定通りのシグネチャであることを要求します。
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{{");
+        write!(f, "w: {}, ", self.w);
+        write!(f, "h: {}, ", self.h);
+        write!(f, "start: {:?}, ", self.start);
+        write!(f, "goal: {:?}, ", self.goal);
+        writeln!(f, "node: {{");
+        for (_, v) in &self.nodes {
+            write!(f, "{{ ");
+            write!(f, "{:?}, ", v.borrow().pos);
+            write!(f, "{:?}, ", v.borrow().value);
+            write!(f, "step: {:?}, ", v.borrow().step);
+            write!(f, "prev: {:?}", v.borrow().prev);
+            writeln!(f, " }}");
+        }
+
+        //nodes : HashMap<Pos, Rc<RefCell<Node>>>,
+        write!(f, "}}")
     }
 }
 
@@ -232,9 +261,11 @@ mod tests {
 0 0 0 0";
 
         let mut gmap = GameMap::new(s);
-        //println!("{:?}", gmap);
+        println!("{:?}", gmap);
 
-//        let goal = gmap.goal_node();
+        let goal = gmap.goal_node();
+        println!("{:?}", gmap);
+
 //        //println!("{:?}", goal);
 //        //print_route(&goal);
 //
