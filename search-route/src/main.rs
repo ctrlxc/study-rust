@@ -30,37 +30,26 @@ struct Node {
     pos   : Pos,
     value : String,
     step  : i32,
-    prev  : Option<Pos>,
+    prev  : Option<Weak<RefCell<Node>>>,
+    done  : bool,
 }
 
 struct GameMap {
-    w     : usize,
-    h     : usize,
     start : Pos,
     goal  : Pos,
     nodes : HashMap<Pos, Rc<RefCell<Node>>>,
 }
 
 impl GameMap {
-    fn new(s: &str) -> GameMap {
-        let mut lines = s.lines();
-
-        let wh: Vec<String> = lines.next().unwrap().split_whitespace()
-            .map(|e| e.parse().ok().unwrap()).collect();
-
-        let rmap: Vec<Vec<String>> = lines.map(|l| l.split_whitespace()
-                                               .map(|e| e.parse().ok().unwrap()).collect()).collect();
-
-        let w: usize = wh[0].parse::<usize>().unwrap();
-        let h: usize = wh[1].parse::<usize>().unwrap();
-
+    fn new(map: &Vec<Vec<String>>) -> GameMap {
         let mut start = Pos {x: 0, y: 0};
         let mut goal = Pos {x: 0, y: 0};
         let mut nodes: HashMap<Pos, Rc<RefCell<Node>>> = HashMap::new();
-        for (i, l) in rmap.iter().enumerate() {
+
+        for (i, l) in map.iter().enumerate() {
             for (j, c) in l.iter().enumerate() {
                 let pos = Pos {x: j, y: i};
-                let mut node = Node {pos, value: c.clone(), step: -1, prev: None};
+                let mut node = Node {pos, value: c.clone(), step: -1, prev: None, done: false};
 
                 if c == "s" {
                     start = pos;
@@ -75,42 +64,95 @@ impl GameMap {
         }
 
         GameMap {
-            w,
-            h,
             start,
             goal,
             nodes,
         }
     }
 
-    fn goal_node(&mut self) -> Option<&Rc<RefCell<Node>>> {
-        self.parse_nodes(self.nodes[&self.start].clone());
+    fn goal(&self) -> Option<&Rc<RefCell<Node>>> {
         self.nodes.get(&self.goal)
     }
 
-    fn parse_nodes(&mut self, cur_node: Rc<RefCell<Node>>) {
-        let next_poses = self.next_poses(&cur_node);
-        let cur_node = cur_node.borrow();
+    fn calc(&self) {
+        while let Some(node) = self.get_calc_node() {
+            self.calc_node(&node);
+        }
+    }
 
-        for next_pos in next_poses {
-            if let Some(next_node) = self.nodes.get(&next_pos) {
-                let mut next_node = next_node.borrow_mut();
-                if next_node.step < 0 || next_node.step > cur_node.step + 1 {
-                    next_node.step = cur_node.step + 1;
-                    next_node.prev = Some(cur_node.pos);
-                }
+    fn get_calc_node(&self) -> Option<&Rc<RefCell<Node>>> {
+        for (_, v) in &self.nodes {
+            if self.can_calc_node(&v.borrow()) {
+                return Some(&v);
             }
+        }
 
-            if let Some(next_node) = self.nodes.get(&next_pos) {
-                self.parse_nodes(next_node.clone());
+        None
+    }
+    
+    fn can_calc_node(&self, node: &Node) -> bool {
+        if node.done {
+            return false;
+        }
+
+        if node.step < 0 {
+            return false;
+        }
+
+        if node.value == "1" {
+            return false;
+        }
+
+        true
+    }
+      
+    fn calc_node(&self, node: &Rc<RefCell<Node>>) {
+        if node.borrow().done {
+            return;
+        }
+
+        node.borrow_mut().done = true;
+
+        let next_nodes = self.next_nodes(&node.borrow());
+
+        for next_node in next_nodes.iter() {
+            {
+                let nx = next_node.upgrade().unwrap();
+                let mut next_node = nx.borrow_mut();
+    
+                if next_node.step < 0 || next_node.step > node.borrow().step + 1 {
+                    next_node.step = node.borrow().step + 1;
+                    next_node.prev = Some(Rc::downgrade(&node));
+                }
             }
         }
     }
 
-    fn next_poses(&self, cur_node: &Rc<RefCell<Node>>) -> Vec<Pos> {
-        let mut nexts: Vec<Pos> = Vec::new();
-        let cb = cur_node.borrow();
-        let cur_pos = cb.pos;
+    fn _parse(&self) {
+        self._parse_node(&self.nodes.get(&self.start).unwrap());
+    }
+
+    fn _parse_node(&self, cur_node: &Rc<RefCell<Node>>) {
+        let next_nodes = self.next_nodes(&cur_node.borrow());
+
+        for next_node in next_nodes.iter() {
+            {
+                let nx = next_node.upgrade().unwrap();
+                let mut next_node = nx.borrow_mut();
+    
+                if next_node.step < 0 || next_node.step > cur_node.borrow().step + 1 {
+                    next_node.step = cur_node.borrow().step + 1;
+                    next_node.prev = Some(Rc::downgrade(&cur_node));
+                }
+            }
+
+            self._parse_node(&next_node.upgrade().unwrap());
+        }
+    }
+
+    fn next_nodes(&self, cur_node: &Node) -> Vec<Weak<RefCell<Node>>> {
+        let mut next_nodes: Vec<Weak<RefCell<Node>>> = Vec::new();
+        let cur_pos = &cur_node.pos;
 
         for p in [[0,1],[0,-1],[1,0],[-1,0]].iter() {
             if (cur_pos.x == 0 && p[0] < 0) || (cur_pos.y == 0 && p[1] < 0) {
@@ -122,136 +164,147 @@ impl GameMap {
                 y: ((cur_pos.y as i32) + p[1]) as usize,
             };
 
-            if self.is_valid(&np, &cb) {
-                nexts.push(np);
+            if let Some(node) = self.get_valid_node(&np, &cur_node) {
+                next_nodes.push(Rc::downgrade(&node));
             }
         }
 
-        nexts
+        next_nodes
     }
 
+    fn get_valid_node(&self, pos: &Pos, cur_node: &Node) -> Option<&Rc<RefCell<Node>>> {
+        if let Some(p) = &cur_node.prev {
+            let p = p.upgrade().unwrap();
+            let p = p.borrow();
+            if p.pos == *pos {
+                return None
+            }
+        }
 
-//    fn parse_nodes(&mut self, cur_node: &Node) {
-//        let next_nodes_ = self.next_nodes(&cur_node);
-//
-//        for next_node in next_nodes_ {            
-//            if (*next_node).step < 0 || (*next_node).step > cur_node.step + 1 {
-//                (*next_node).step = cur_node.step + 1;
-//                //next_node.prev = Some(cur_node); @@@ ???
-//            }
-//
-//            self.parse_nodes(&next_node);
-//        }
-//    }
-//
-//    fn next_nodes(&mut self, cur_node: &Node) -> Vec<Node> {
-//        let mut nexts: Vec<Node> = Vec::new();
-//        
-//        for p in [[0,1],[0,-1],[1,0],[-1,0]].iter() {
-//            if (cur_node.pos.x == 0 && p[0] < 0) || (cur_node.pos.y == 0 && p[1] < 0) {
-//                continue;
-//            }
-//
-//            let np = Pos {
-//                x: ((cur_node.pos.x as i32) + p[0]) as usize,
-//                y: ((cur_node.pos.y as i32) + p[1]) as usize,
-//            };
-//
-//            if self.is_valid(&np, &cur_node) {
-//                let next_node = self.nodes.entry(np).or_insert(Node {pos: np, step: -1, prev: None});
-////                let b = Box::new(Node {pos: np, step: -1, prev: None});
-////                let next_node = self.nodes.entry(np).or_insert(b);
-//                nexts.push(next_node.clone());
-//            }
-//        }
-//        
-//        nexts
-//    }
-
-    fn is_valid(&self, pos: &Pos, cur_node: &Node) -> bool {
         match self.nodes.get(pos) {
             Some(node) => {
-                if node.borrow().value == "1" {
-                    return false;
+                let n = node.borrow();
+
+                if n.value == "1" {
+                    None
+                }
+                else {
+                    Some(&node)
                 }
             },
+            None => None,
+        }
+    }
+
+    fn print_route(&self, node: &Rc<RefCell<Node>>) {
+        println!("{:#?}", *node.borrow());
+        if let Some(p) = &node.borrow().prev {
+            self.print_route(&p.upgrade().unwrap());
+        }
+    }
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Node {{")?;
+        write!(f, "pos: {:?}, ", self.pos)?;
+        write!(f, "value: {}, ", self.value)?;
+        write!(f, "step: {}, ", self.step)?;
+
+        match &self.prev {
+            Some(p) => {
+                let p = p.upgrade().unwrap();
+                write!(f, "prev-pos: {:?}", p.borrow().pos)?;
+            },
             None => {
-                return false;
-            }
-        }
-
-        if let Some(p) = &cur_node.prev {
-            if p.x == pos.x && p.y == pos.y {
-                return false;
-            }
-        }
-
-        true
+                write!(f, "prev-pos: {{None}}")?;
+            },
+        };
+        
+        write!(f, "}}")
     }
 }
 
 impl fmt::Debug for GameMap {
-    // このトレイトは`fmt`が想定通りのシグネチャであることを要求します。
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{{");
-        write!(f, "w: {}, ", self.w);
-        write!(f, "h: {}, ", self.h);
-        write!(f, "start: {:?}, ", self.start);
-        write!(f, "goal: {:?}, ", self.goal);
-        writeln!(f, "node: {{");
-        for (_, v) in &self.nodes {
-            write!(f, "{{ ");
-            write!(f, "{:?}, ", v.borrow().pos);
-            write!(f, "{:?}, ", v.borrow().value);
-            write!(f, "step: {:?}, ", v.borrow().step);
-            write!(f, "prev: {:?}", v.borrow().prev);
-            writeln!(f, " }}");
-        }
+        write!(f, "GameMap {{")?;
+        write!(f, "start: {:?}, ", self.start)?;
+        write!(f, "goal: {:?}, ", self.goal)?;
 
-        //nodes : HashMap<Pos, Rc<RefCell<Node>>>,
+        writeln!(f, "nodes: {{")?;
+        for (_, v) in &self.nodes {
+            writeln!(f, "  {:?}, ", v.borrow())?;
+        }
+        write!(f, "}}")?;
+
         write!(f, "}}")
     }
 }
 
 fn main() {
-//    let s = ""; //@@@
-//
-//    let mut gmap = GameMap::new(s);
-//    //println!("{:?}", gmap);
-//
-//    let goal = gmap.goal_node();
-//    //println!("{:?}", goal);
-//    //print_route(&goal);
-//    
-//    match goal {
-//        Some(node) => {
-//            println!("{}", node.step);
-//        },
-//        None => println!("Fail")
-//    }
+    let map = read_map();
+
+    let gmap = GameMap::new(&map);
+
+    gmap.calc();
+    //println!("{:?}", gmap);
+        
+    let goal = gmap.goal();
+
+    if let Some(goal) = goal {
+        //gmap.print_route(goal);
+
+        let g = goal.borrow();
+        if g.step > 0 {
+            println!("{}", g.step);
+        }
+        else {
+            println!("Fail");
+        }
+    }
 }
 
-//fn read<T: std::str::FromStr>() -> T {
-//    let mut s = String::new();
-//    std::io::stdin().read_line(&mut s).ok();
-//    s.trim().parse().ok().unwrap()
-//}
-//
-//fn read_vec<T: std::str::FromStr>() -> Vec<T> {
-//    read::<String>().split_whitespace()
-//        .map(|e| e.parse().ok().unwrap()).collect()
-//}
-//
-//fn read_vec2<T: std::str::FromStr>(n: u32) -> Vec<Vec<T>> {
-//    (0..n).map(|_| read_vec()).collect()
-//}
+fn read_map() -> Vec<Vec<String>> {
+    let wh = read_vec::<String>();
+    let h = &wh[1];
+    let map = read_vec2::<String>(h.parse::<u32>().unwrap());
+
+    map
+}
+
+fn read<T: std::str::FromStr>() -> T {
+    let mut s = String::new();
+    std::io::stdin().read_line(&mut s).ok();
+    s.trim().parse().ok().unwrap()
+}
+
+fn read_vec<T: std::str::FromStr>() -> Vec<T> {
+    read::<String>().split_whitespace()
+        .map(|e| e.parse().ok().unwrap()).collect()
+}
+
+fn read_vec2<T: std::str::FromStr>(n: u32) -> Vec<Vec<T>> {
+    (0..n).map(|_| read_vec()).collect()
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn make_map(s: &str) -> Vec<Vec<String>> {
+        let mut lines = s.lines();
+
+        let _wh: Vec<String> = lines.next().unwrap().split_whitespace()
+            .map(|e| e.parse().ok().unwrap()).collect();
+
+        let map: Vec<Vec<String>> = lines.map(|l| l.split_whitespace()
+                                              .map(|e| e.parse().ok().unwrap()).collect()).collect();
+
+        map
+    }
+    
     #[test]
-    fn test_find_routes() {
+    fn test_goal() {
         let s = "\
 4 5
 0 s 0 1
@@ -260,16 +313,45 @@ mod tests {
 0 0 1 g
 0 0 0 0";
 
-        let mut gmap = GameMap::new(s);
+        let map = make_map(s);
+        let gmap = GameMap::new(&map);
+        gmap.calc();
         println!("{:?}", gmap);
+        
+        let goal = gmap.goal();
 
-        let goal = gmap.goal_node();
-        println!("{:?}", gmap);
+        if let Some(goal) = goal {
+            gmap.print_route(goal);
+        }
 
-//        //println!("{:?}", goal);
-//        //print_route(&goal);
-//
-//        assert_eq!(goal.pos, Pos {x: 3, y: 3});
-//        assert_eq!(goal.step, 9);
+        let g = goal.unwrap().borrow();
+        assert_eq!(g.pos, Pos {x: 3, y: 3});
+        assert_eq!(g.step, 9);
     }
+
+    #[test]
+    fn test_nogoal() {
+        let s = "\
+4 4
+0 s 0 1
+1 0 0 0
+0 1 1 1
+0 0 0 g";
+
+        let map = make_map(s);
+        let gmap = GameMap::new(&map);
+        gmap.calc();
+        println!("{:?}", gmap);
+        
+        let goal = gmap.goal();
+
+        if let Some(goal) = goal {
+            gmap.print_route(goal);
+        }
+
+        let g = goal.unwrap().borrow();
+        assert_eq!(g.pos, Pos {x: 3, y: 3});
+        assert_eq!(g.step, -1);
+    }
+    
 }
