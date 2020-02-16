@@ -1,11 +1,11 @@
 //search-route.rs
+use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::fmt;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::usize;
 
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +47,17 @@ struct Node {
     value : String,
     step  : i32,
     prev  : Option<Pos>,
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Node {{")?;
+        write!(f, "pos: {:?}, ", self.pos)?;
+        write!(f, "value: {}, ", self.value)?;
+        write!(f, "step: {}, ", self.step)?;
+        write!(f, "prev: {:?}, ", self.prev)?;
+        write!(f, "}}")
+    }
 }
 
 #[derive(Eq, PartialEq)]
@@ -104,17 +115,18 @@ impl GameMap {
         }
     }
 
-    fn calc(&self, start: &Pos, goal: &Pos) -> Option<i32> {
-        let mut heap = BinaryHeap::new();
-        heap.push(State {step: 0, pos: start.clone()});
-
-        {
-            let node = self.nodes.get(&start).unwrap();
-            node.borrow_mut().step = 0;
+    fn clear(&self) {
+        for (_, v) in &self.nodes {
+            v.borrow_mut().step = -1;
         }
+    }
+
+    fn calc(&self) -> Option<i32> {
+        let mut heap = BinaryHeap::new();
+        heap.push(State {step: 0, pos: self.start.clone()});
 
         while let Some(State {step, pos}) = heap.pop() {
-            if pos == *goal {
+            if pos == self.goal {
                 return Some(step);
             }
 
@@ -196,17 +208,6 @@ impl GameMap {
     }
 }
 
-impl fmt::Debug for Node {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node {{")?;
-        write!(f, "pos: {:?}, ", self.pos)?;
-        write!(f, "value: {}, ", self.value)?;
-        write!(f, "step: {}, ", self.step)?;
-        write!(f, "prev: {:?}, ", self.prev)?;
-        write!(f, "}}")
-    }
-}
-
 impl fmt::Debug for GameMap {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "GameMap {{")?;
@@ -226,7 +227,7 @@ impl fmt::Debug for GameMap {
 fn main() {
     let map = read_map();
     let gmap = GameMap::new(&map);
-    let step = gmap.calc(&gmap.start, &gmap.goal);
+    let step = gmap.calc();
 
     match step {
         Some(step) => {
@@ -289,7 +290,7 @@ mod tests {
 
         let map = make_map(s);
         let gmap = GameMap::new(&map);
-        let step = gmap.calc(&gmap.start, &gmap.goal);
+        let step = gmap.calc();
         assert_eq!(step, Some(9));
 
         gmap.print_route(&gmap.goal);
@@ -303,7 +304,7 @@ g s";
 
         let map = make_map(s);
         let gmap = GameMap::new(&map);
-        let step = gmap.calc(&gmap.start, &gmap.goal);
+        let step = gmap.calc();
         assert_eq!(step, Some(1));
 
         gmap.print_route(&gmap.goal);
@@ -317,7 +318,7 @@ g
 s";
         let map = make_map(s);
         let gmap = GameMap::new(&map);
-        let step = gmap.calc(&gmap.start, &gmap.goal);
+        let step = gmap.calc();
         assert_eq!(step, Some(1));
 
         gmap.print_route(&gmap.goal);
@@ -334,7 +335,7 @@ s";
 
         let map = make_map(s);
         let gmap = GameMap::new(&map);
-        let step = gmap.calc(&gmap.start, &gmap.goal);
+        let step = gmap.calc();
         assert_eq!(step, None);
 
         gmap.print_route(&gmap.goal);
@@ -356,10 +357,9 @@ s";
         map[size-1][size-1] = "g".to_string();
 
         let gmap = GameMap::new(&map);
-        let step = gmap.calc(&gmap.start, &gmap.goal);
+        let step = gmap.calc();
         assert_eq!(step, Some((size*2-2) as i32));
 
         gmap.print_route(&gmap.goal);
     }
-    
 }
