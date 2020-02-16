@@ -112,7 +112,7 @@ impl GameMap {
             let node = self.nodes.get(&start).unwrap();
             node.borrow_mut().step = 0;
         }
-    
+
         while let Some(State {step, pos}) = heap.pop() {
             if pos == *goal {
                 return Some(step);
@@ -125,17 +125,15 @@ impl GameMap {
             }
 
             for next_node in self.next_nodes(&node.borrow()).iter() {
-                {
-                    let nx = next_node.upgrade().unwrap();
-                    let mut next_node = nx.borrow_mut();
-                    let next_step = step + 1;
-                    
-                    if next_node.step < 0 || next_node.step > next_step {
-                        next_node.step = next_step;
-                        next_node.prev = Some(pos);
+                let nx = next_node.upgrade().unwrap();
+                let mut next_node = nx.borrow_mut();
+                let next_step = step + 1;
+                
+                if next_node.step < 0 || next_node.step > next_step {
+                    next_node.step = next_step;
+                    next_node.prev = Some(pos);
 
-                        heap.push(State { step: next_step, pos: next_node.pos.clone()});
-                    }
+                    heap.push(State { step: next_step, pos: next_node.pos.clone()});
                 }
             }
         }
