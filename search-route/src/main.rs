@@ -4,6 +4,9 @@ use std::hash::{Hash, Hasher};
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::fmt;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::usize;
 
 #[derive(Debug, Clone, Copy)]
 struct Pos {
@@ -19,6 +22,19 @@ impl PartialEq for Pos {
 
 impl Eq for Pos {}
 
+impl Ord for Pos {
+    fn cmp(&self, other: &Pos) -> Ordering {
+        other.x.cmp(&self.x)
+            .then_with(|| self.y.cmp(&other.y))
+    }
+}
+
+impl PartialOrd for Pos {
+    fn partial_cmp(&self, other: &Pos) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Hash for Pos {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.x.hash(state);
@@ -30,8 +46,26 @@ struct Node {
     pos   : Pos,
     value : String,
     step  : i32,
-    prev  : Option<Weak<RefCell<Node>>>,
-    done  : bool,
+    prev  : Option<Pos>,
+}
+
+#[derive(Eq, PartialEq)]
+struct State {
+    pos   : Pos,
+    step  : i32,
+}
+
+impl Ord for State {
+    fn cmp(&self, other: &State) -> Ordering {
+        other.step.cmp(&self.step)
+            .then_with(|| self.pos.cmp(&other.pos))
+    }
+}
+
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &State) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 struct GameMap {
@@ -49,7 +83,7 @@ impl GameMap {
         for (i, l) in map.iter().enumerate() {
             for (j, c) in l.iter().enumerate() {
                 let pos = Pos {x: j, y: i};
-                let mut node = Node {pos, value: c.clone(), step: -1, prev: None, done: false};
+                let mut node = Node {pos, value: c.clone(), step: -1, prev: None};
 
                 if c == "s" {
                     start = pos;
@@ -70,86 +104,45 @@ impl GameMap {
         }
     }
 
-    fn goal(&self) -> Option<&Rc<RefCell<Node>>> {
-        self.nodes.get(&self.goal)
-    }
+    fn calc(&self, start: &Pos, goal: &Pos) -> Option<i32> {
+        let mut heap = BinaryHeap::new();
+        heap.push(State {step: 0, pos: start.clone()});
 
-    fn calc(&self) {
-        while let Some(node) = self.get_calc_node() {
-            self.calc_node(&node);
+        {
+            let node = self.nodes.get(&start).unwrap();
+            node.borrow_mut().step = 0;
         }
-    }
+    
+        while let Some(State {step, pos}) = heap.pop() {
+            if pos == *goal {
+                return Some(step);
+            }
 
-    fn get_calc_node(&self) -> Option<&Rc<RefCell<Node>>> {
-        for (_, v) in &self.nodes {
-            if self.can_calc_node(&v.borrow()) {
-                return Some(&v);
+            let node = self.nodes.get(&pos).unwrap();
+
+            if step > node.borrow().step {
+                continue;
+            }
+
+            for next_node in self.next_nodes(&node.borrow()).iter() {
+                {
+                    let nx = next_node.upgrade().unwrap();
+                    let mut next_node = nx.borrow_mut();
+                    let next_step = step + 1;
+                    
+                    if next_node.step < 0 || next_node.step > next_step {
+                        next_node.step = next_step;
+                        next_node.prev = Some(pos);
+
+                        heap.push(State { step: next_step, pos: next_node.pos.clone()});
+                    }
+                }
             }
         }
-
+    
         None
     }
     
-    fn can_calc_node(&self, node: &Node) -> bool {
-        if node.done {
-            return false;
-        }
-
-        if node.step < 0 {
-            return false;
-        }
-
-        if node.value == "1" {
-            return false;
-        }
-
-        true
-    }
-      
-    fn calc_node(&self, node: &Rc<RefCell<Node>>) {
-        if node.borrow().done {
-            return;
-        }
-
-        node.borrow_mut().done = true;
-
-        let next_nodes = self.next_nodes(&node.borrow());
-
-        for next_node in next_nodes.iter() {
-            {
-                let nx = next_node.upgrade().unwrap();
-                let mut next_node = nx.borrow_mut();
-    
-                if next_node.step < 0 || next_node.step > node.borrow().step + 1 {
-                    next_node.step = node.borrow().step + 1;
-                    next_node.prev = Some(Rc::downgrade(&node));
-                }
-            }
-        }
-    }
-
-    fn _parse(&self) {
-        self._parse_node(&self.nodes.get(&self.start).unwrap());
-    }
-
-    fn _parse_node(&self, cur_node: &Rc<RefCell<Node>>) {
-        let next_nodes = self.next_nodes(&cur_node.borrow());
-
-        for next_node in next_nodes.iter() {
-            {
-                let nx = next_node.upgrade().unwrap();
-                let mut next_node = nx.borrow_mut();
-    
-                if next_node.step < 0 || next_node.step > cur_node.borrow().step + 1 {
-                    next_node.step = cur_node.borrow().step + 1;
-                    next_node.prev = Some(Rc::downgrade(&cur_node));
-                }
-            }
-
-            self._parse_node(&next_node.upgrade().unwrap());
-        }
-    }
-
     fn next_nodes(&self, cur_node: &Node) -> Vec<Weak<RefCell<Node>>> {
         let mut next_nodes: Vec<Weak<RefCell<Node>>> = Vec::new();
         let cur_pos = &cur_node.pos;
@@ -174,7 +167,7 @@ impl GameMap {
 
     fn get_valid_node(&self, pos: &Pos, cur_node: &Node) -> Option<&Rc<RefCell<Node>>> {
         if let Some(p) = &cur_node.prev {
-            let p = p.upgrade().unwrap();
+            let p = self.nodes.get(&p).unwrap();
             let p = p.borrow();
             if p.pos == *pos {
                 return None
@@ -196,10 +189,11 @@ impl GameMap {
         }
     }
 
-    fn print_route(&self, node: &Rc<RefCell<Node>>) {
-        println!("{:#?}", *node.borrow());
+    fn print_route(&self, pos: &Pos) {
+        let node = self.nodes.get(&pos).unwrap();
+        println!("{:?}", node.borrow().pos);
         if let Some(p) = &node.borrow().prev {
-            self.print_route(&p.upgrade().unwrap());
+            self.print_route(&p);
         }
     }
 }
@@ -210,17 +204,7 @@ impl fmt::Debug for Node {
         write!(f, "pos: {:?}, ", self.pos)?;
         write!(f, "value: {}, ", self.value)?;
         write!(f, "step: {}, ", self.step)?;
-
-        match &self.prev {
-            Some(p) => {
-                let p = p.upgrade().unwrap();
-                write!(f, "prev-pos: {:?}", p.borrow().pos)?;
-            },
-            None => {
-                write!(f, "prev-pos: {{None}}")?;
-            },
-        };
-        
+        write!(f, "prev: {:?}, ", self.prev)?;
         write!(f, "}}")
     }
 }
@@ -243,25 +227,17 @@ impl fmt::Debug for GameMap {
 
 fn main() {
     let map = read_map();
-
     let gmap = GameMap::new(&map);
+    let step = gmap.calc(&gmap.start, &gmap.goal);
 
-    gmap.calc();
-    //println!("{:?}", gmap);
-        
-    let goal = gmap.goal();
-
-    if let Some(goal) = goal {
-        //gmap.print_route(goal);
-
-        let g = goal.borrow();
-        if g.step > 0 {
-            println!("{}", g.step);
-        }
-        else {
+    match step {
+        Some(step) => {
+            println!("{}", step);
+        },
+        None => {
             println!("Fail");
         }
-    }
+    };
 }
 
 fn read_map() -> Vec<Vec<String>> {
@@ -304,7 +280,7 @@ mod tests {
     }
     
     #[test]
-    fn test_goal() {
+    fn test_normal_goal() {
         let s = "\
 4 5
 0 s 0 1
@@ -315,20 +291,40 @@ mod tests {
 
         let map = make_map(s);
         let gmap = GameMap::new(&map);
-        gmap.calc();
-        println!("{:?}", gmap);
-        
-        let goal = gmap.goal();
+        let step = gmap.calc(&gmap.start, &gmap.goal);
+        assert_eq!(step, Some(9));
 
-        if let Some(goal) = goal {
-            gmap.print_route(goal);
-        }
-
-        let g = goal.unwrap().borrow();
-        assert_eq!(g.pos, Pos {x: 3, y: 3});
-        assert_eq!(g.step, 9);
+        gmap.print_route(&gmap.goal);
     }
 
+    #[test]
+    fn test_small_x2y1_goal() {
+        let s = "\
+2 1
+g s";
+
+        let map = make_map(s);
+        let gmap = GameMap::new(&map);
+        let step = gmap.calc(&gmap.start, &gmap.goal);
+        assert_eq!(step, Some(1));
+
+        gmap.print_route(&gmap.goal);
+    }
+
+    #[test]
+    fn test_small_x1y2_goal() {
+        let s = "\
+1 2
+g
+s";
+        let map = make_map(s);
+        let gmap = GameMap::new(&map);
+        let step = gmap.calc(&gmap.start, &gmap.goal);
+        assert_eq!(step, Some(1));
+
+        gmap.print_route(&gmap.goal);
+    }
+    
     #[test]
     fn test_nogoal() {
         let s = "\
@@ -340,18 +336,32 @@ mod tests {
 
         let map = make_map(s);
         let gmap = GameMap::new(&map);
-        gmap.calc();
-        println!("{:?}", gmap);
-        
-        let goal = gmap.goal();
+        let step = gmap.calc(&gmap.start, &gmap.goal);
+        assert_eq!(step, None);
 
-        if let Some(goal) = goal {
-            gmap.print_route(goal);
+        gmap.print_route(&gmap.goal);
+    }
+
+    #[test]
+    fn test_big_goal() {
+        let size: usize = 100;
+        let mut map: Vec<Vec<String>> = Vec::new();
+
+        for i in 0..size {
+            map.push(Vec::new());
+            for _ in 0..size {
+                map[i].push("0".to_string());
+            }
         }
 
-        let g = goal.unwrap().borrow();
-        assert_eq!(g.pos, Pos {x: 3, y: 3});
-        assert_eq!(g.step, -1);
+        map[0][0] = "s".to_string();
+        map[size-1][size-1] = "g".to_string();
+
+        let gmap = GameMap::new(&map);
+        let step = gmap.calc(&gmap.start, &gmap.goal);
+        assert_eq!(step, Some((size*2-2) as i32));
+
+        gmap.print_route(&gmap.goal);
     }
     
 }
