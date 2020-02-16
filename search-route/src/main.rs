@@ -6,7 +6,6 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 use std::fmt;
 use std::cmp::Ordering;
-use std::usize;
 
 #[derive(Debug, Clone, Copy)]
 struct Pos {
@@ -115,7 +114,7 @@ impl GameMap {
         }
     }
 
-    fn clear(&self) {
+    fn _clear(&self) {
         for (_, v) in &self.nodes {
             v.borrow_mut().step = -1;
         }
