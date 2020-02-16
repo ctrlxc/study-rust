@@ -1,13 +1,38 @@
 use std::collections::HashMap;
 use std::collections::BinaryHeap;
+use std::hash::{Hash, Hasher};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 //use std::fmt;
 use std::usize;
 
+
+#[derive(Debug, Clone, Copy)]
+struct Pos {
+    no1    : usize,
+    no2    : usize,
+}
+
+impl PartialEq for Pos {
+    fn eq(&self, other: &Self) -> bool {
+        self.no1 == other.no1 && self.no2 == other.no2
+    }
+}
+
+impl Eq for Pos {}
+
+impl Hash for Pos {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.no1.hash(state);
+        self.no2.hash(state);
+    }
+}
+
 #[derive(Eq, PartialEq)]
 struct Node {
-    no    : usize,
-    cost  : usize,
+    no     : usize,
+    cost   : usize,
+    prev_no: Option<usize>,
 }
 
 impl Ord for Node {
@@ -25,51 +50,75 @@ impl PartialOrd for Node {
 
 struct WorldMap {
     nodes: HashMap<usize, Vec<Node>>,
+    cache: RefCell<HashMap<Pos, usize>>,
 }
 
 impl WorldMap {
     fn new(map: &Vec<Vec<String>>) -> WorldMap {
         let mut nodes: HashMap<usize, Vec<Node>> = HashMap::new();
+        let mut cache: HashMap<Pos, usize> = HashMap::new();
 
         for (_, l) in map.iter().enumerate() {
             let no1 = l[0].parse::<usize>().unwrap();
             let no2 = l[1].parse::<usize>().unwrap();
             let cost = l[2].parse::<usize>().unwrap();
 
-            nodes.entry(no1).or_insert(Vec::new()).push(Node {no: no2, cost});
-            nodes.entry(no2).or_insert(Vec::new()).push(Node {no: no1, cost});
+            nodes.entry(no1).or_insert(Vec::new()).push(Node {no: no2, cost, prev_no: None});
+            nodes.entry(no2).or_insert(Vec::new()).push(Node {no: no1, cost, prev_no: None});
+
+            let pos = WorldMap::make_pos(no1, no2);
+            cache.entry(pos).or_insert(cost);
         }
 
         WorldMap {
             nodes,
+            cache: RefCell::new(cache),
         }
     }
 
+    fn set_cache_pos(&self, pos: &Pos, cost: usize) {
+        self.cache.borrow_mut().entry(*pos).or_insert(cost);
+    }
+
+    fn set_cache(&self, no1: usize, no2: usize, cost: usize) {
+        let pos = WorldMap::make_pos(no1, no2);
+        self.set_cache_pos(&pos, cost);
+    }
+
+    fn make_pos(no1: usize, no2: usize) -> Pos {
+        Pos {no1: std::cmp::min(no1, no2), no2: std::cmp::max(no1, no2)}
+    }
+
     fn cost(&self, start: usize, goal: usize) -> Option<usize> {
-        let mut costs: Vec<_> = (0..self.nodes.len()).map(|_| usize::MAX).collect();
-        costs[start-1] = 0;
+        let pos = WorldMap::make_pos(start, goal);
+        if let Some(c) = self.cache.borrow().get(&pos) {
+            //println!("cached! {:?}", *c);
+            return Some(*c);
+        }
 
         let mut heap = BinaryHeap::new();
-        heap.push(Node {no: start, cost: 0});
+        heap.push(Node {no: start, cost: 0, prev_no: None});
 
-        while let Some(Node {no, cost}) = heap.pop() {
+        while let Some(Node {no, cost, prev_no}) = heap.pop() {
+            self.set_cache(start, no, cost);
+
             if no == goal {
                 return Some(cost);
-            }
-
-            if cost > costs[no-1] {
-                continue;
             }
 
             let nexts = self.nodes.get(&no).unwrap();
 
             for next in nexts.iter() {
-                let nx = Node {no: next.no, cost: cost + next.cost};
-
-                if costs[nx.no-1] > nx.cost {
-                    costs[nx.no-1] = nx.cost;
-                    heap.push(nx);
+                if let Some(prev_no) = prev_no {
+                    if prev_no == next.no {
+                        continue;
+                    }
                 }
+
+                self.set_cache(no, next.no, next.cost);
+
+                let nx = Node {no: next.no, cost: cost + next.cost, prev_no: Some(no)};
+                heap.push(nx);
             }
         }
 
