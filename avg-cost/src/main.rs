@@ -101,7 +101,7 @@ impl WorldMap {
 
     fn visit(&self, pos: &Pos, cost: usize) {
         #[cfg(test)]
-        println!("pos: {:?}, cost {}", pos, cost);
+        //println!("pos: {:?}, cost {}", pos, cost);
 
         let mut visited = self.visited.lock().unwrap();
         visited.insert(*pos, cost);
@@ -226,5 +226,25 @@ mod tests {
         calc(&wmap);
         assert_eq!(wmap.cost(), 850);
         assert_eq!(wmap.avg(), 23.61111111111111);
+    }
+
+    #[test]
+    fn test_big_auto() {
+        let size: usize = 100;
+        let mut map: Vec<Vec<String>> = Vec::new();
+
+        let mut cost: usize = 0;
+        for i in 0..size {
+            let mut v = Vec::new();
+            v.push((i+1).to_string());
+            v.push((i+2).to_string());
+            v.push((i+1).to_string());
+            map.push(v);
+        }
+
+        let wmap = Arc::new(WorldMap::new(&map));
+        calc(&wmap);
+        assert_eq!(wmap.cost(), 8670850);
+        assert_eq!(wmap.avg(), 1717.0);
     }
 }
