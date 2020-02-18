@@ -1,16 +1,14 @@
 use std::collections::HashMap;
-use std::collections::BinaryHeap;
 use std::hash::{Hash, Hasher};
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use std::cmp::Ordering;
-//use std::fmt;
+use std::thread;
 use std::usize;
-
 
 #[derive(Debug, Clone, Copy)]
 struct Pos {
-    no1    : usize,
-    no2    : usize,
+    no1: usize,
+    no2: usize,
 }
 
 impl PartialEq for Pos {
@@ -29,127 +27,130 @@ impl Hash for Pos {
 }
 
 #[derive(Eq, PartialEq)]
-struct Node {
-    no     : usize,
-    cost   : usize,
-    prev_no: Option<usize>,
+struct State {
+    no  : usize,
+    cost: usize,
+    prev: usize,
 }
 
-impl Ord for Node {
-    fn cmp(&self, other: &Node) -> Ordering {
+impl Ord for State {
+    fn cmp(&self, other: &State) -> Ordering {
         other.cost.cmp(&self.cost)
             .then_with(|| self.no.cmp(&other.no))
     }
 }
 
-impl PartialOrd for Node {
-    fn partial_cmp(&self, other: &Node) -> Option<Ordering> {
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &State) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 struct WorldMap {
-    nodes: HashMap<usize, Vec<Node>>,
-    cache: RefCell<HashMap<Pos, usize>>,
+    nodes: HashMap<usize, Vec<usize>>,
+    costs: HashMap<Pos, usize>,
+    visited: Arc<Mutex<HashMap<Pos, usize>>>,
 }
 
 impl WorldMap {
     fn new(map: &Vec<Vec<String>>) -> WorldMap {
-        let mut nodes: HashMap<usize, Vec<Node>> = HashMap::new();
-        let mut cache: HashMap<Pos, usize> = HashMap::new();
+        let mut nodes: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut costs: HashMap<Pos, usize> = HashMap::new();
 
         for (_, l) in map.iter().enumerate() {
             let no1 = l[0].parse::<usize>().unwrap();
             let no2 = l[1].parse::<usize>().unwrap();
             let cost = l[2].parse::<usize>().unwrap();
 
-            nodes.entry(no1).or_insert(Vec::new()).push(Node {no: no2, cost, prev_no: None});
-            nodes.entry(no2).or_insert(Vec::new()).push(Node {no: no1, cost, prev_no: None});
+            nodes.entry(no1).or_insert(Vec::new()).push(no2);
+            nodes.entry(no2).or_insert(Vec::new()).push(no1);
 
             let pos = WorldMap::make_pos(no1, no2);
-            cache.entry(pos).or_insert(cost);
+            costs.entry(pos).or_insert(cost);
         }
 
         WorldMap {
             nodes,
-            cache: RefCell::new(cache),
+            costs,
+            visited: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    fn set_cache_pos(&self, pos: &Pos, cost: usize) {
-        self.cache.borrow_mut().entry(*pos).or_insert(cost);
-    }
-
-    fn set_cache(&self, no1: usize, no2: usize, cost: usize) {
-        let pos = WorldMap::make_pos(no1, no2);
-        self.set_cache_pos(&pos, cost);
     }
 
     fn make_pos(no1: usize, no2: usize) -> Pos {
         Pos {no1: std::cmp::min(no1, no2), no2: std::cmp::max(no1, no2)}
     }
 
-    fn cost(&self, start: usize, goal: usize) -> Option<usize> {
-        let pos = WorldMap::make_pos(start, goal);
-        if let Some(c) = self.cache.borrow().get(&pos) {
-            //println!("cached! {:?}", *c);
-            return Some(*c);
-        }
+    fn calc(&self, start_no: usize) {
+        let mut status: Vec<State> = Vec::new();
+        status.push(State {no: start_no, cost: 0, prev: 0});
 
-        let mut heap = BinaryHeap::new();
-        heap.push(Node {no: start, cost: 0, prev_no: None});
-
-        while let Some(Node {no, cost, prev_no}) = heap.pop() {
-            self.set_cache(start, no, cost);
-
-            if no == goal {
-                return Some(cost);
+        while let Some(State {no, cost, prev}) = status.pop() {
+            if no > start_no {
+                self.visit(&WorldMap::make_pos(start_no, no), cost);
             }
 
-            let nexts = self.nodes.get(&no).unwrap();
+            let nexts = self.nodes.get(&no).unwrap().iter().filter(|x| **x != prev);
 
-            for next in nexts.iter() {
-                if let Some(prev_no) = prev_no {
-                    if prev_no == next.no {
-                        continue;
-                    }
-                }
-
-                self.set_cache(no, next.no, next.cost);
-
-                let nx = Node {no: next.no, cost: cost + next.cost, prev_no: Some(no)};
-                heap.push(nx);
+            for next_no in nexts {
+                let pos = WorldMap::make_pos(no, *next_no);
+                let next_cost = self.costs.get(&pos).unwrap();
+                status.push(State {no: *next_no, cost: (cost + *next_cost), prev: no});
             }
         }
-
-        None
     }
 
-    fn costs(&self) -> usize {
-        let mut costs: usize = 0;
-        for i in 1..self.nodes.len()+1 {
-            for j in i+1..self.nodes.len()+1 {
-                if let Some(c) = self.cost(i, j) {
-                    costs += c;
-                }
-            }
-        }
+    fn visit(&self, pos: &Pos, cost: usize) {
+        #[cfg(test)]
+        println!("pos: {:?}, cost {}", pos, cost);
 
-        costs
+        let mut visited = self.visited.lock().unwrap();
+        visited.insert(*pos, cost);
+    }
+
+    fn cost(&self) -> usize {
+        let visited = self.visited.clone();
+        let visited = visited.lock().unwrap();
+        let cost: usize = (*visited).values().map(|v| v).sum();
+
+        cost
     }
 
     fn avg(&self) -> f64 {
-        let costs = self.costs();
+        let cost = self.cost();
         let len = self.nodes.len();
         let num = (len * (len-1)) / 2;
-        (costs as f64) / (num as f64)
+        (cost as f64) / (num as f64)
     }
 }
 
 
+fn calc(wmap: &Arc<WorldMap>) {
+    // TODO: 有限スレッド化
+    // const THREAD: usize = 4;
+    // TODO: async/awaitを使えるなら使う
+
+    let mut handles = Vec::new();
+
+    for k in wmap.nodes.keys() {
+        let wmap = wmap.clone();
+        let k = k.clone();
+
+        let handle = thread::spawn(move || {
+            wmap.calc(k);
+        });
+
+        handles.push( handle );
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
 fn main() {
     let map = read_map();
-    let wmap = WorldMap::new(&map);
+    let wmap = Arc::new(WorldMap::new(&map));
+    calc(&wmap);
     let avg = wmap.avg();
     println!("{}", avg);
 }
@@ -191,7 +192,7 @@ mod tests {
 
         map
     }
-    
+
     #[test]
     fn test_1() {
         let s = "\
@@ -201,18 +202,10 @@ mod tests {
 4 2 3";
 
         let map = make_map(s);
-        let wmap = WorldMap::new(&map);
-
-        assert_eq!(wmap.cost(1, 2), Some(6));
-        assert_eq!(wmap.cost(1, 3), Some(4));
-        assert_eq!(wmap.cost(1, 4), Some(9));
-        assert_eq!(wmap.cost(2, 3), Some(10));
-        assert_eq!(wmap.cost(2, 4), Some(3));
-        assert_eq!(wmap.cost(3, 4), Some(13));
-        
-        assert_eq!(wmap.costs(), 6+4+9+10+3+13);
+        let wmap = Arc::new(WorldMap::new(&map));
+        calc(&wmap);
+        assert_eq!(wmap.cost(), 6+4+9+10+3+13);
         assert_eq!(wmap.avg(), 7.5);
-        println!("{:#?}", wmap.avg());
     }
 
     #[test]
@@ -229,9 +222,9 @@ mod tests {
 8 7 3";
 
         let map = make_map(s);
-        let wmap = WorldMap::new(&map);
-        
+        let wmap = Arc::new(WorldMap::new(&map));
+        calc(&wmap);
+        assert_eq!(wmap.cost(), 850);
         assert_eq!(wmap.avg(), 23.61111111111111);
-        println!("{:#?}", wmap.avg());
     }
 }
