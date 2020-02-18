@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::cmp::Ordering;
 use std::thread;
 use std::usize;
+use std::sync::mpsc;
 
 #[derive(Debug, Clone, Copy)]
 struct Pos {
@@ -50,6 +51,7 @@ struct WorldMap {
     nodes: HashMap<usize, Vec<usize>>,
     costs: HashMap<Pos, usize>,
     visited: Arc<Mutex<HashMap<Pos, usize>>>,
+    all: Arc<Mutex<usize>>,
 }
 
 impl WorldMap {
@@ -73,6 +75,7 @@ impl WorldMap {
             nodes,
             costs,
             visited: Arc::new(Mutex::new(HashMap::new())),
+            all: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -101,18 +104,17 @@ impl WorldMap {
 
     fn visit(&self, pos: &Pos, cost: usize) {
         #[cfg(test)]
-        //println!("pos: {:?}, cost {}", pos, cost);
+        {
+            println!("pos: {:?}, cost {}", pos, cost);
+        //    let mut visited = self.visited.lock().unwrap();
+        //    visited.insert(*pos, cost);
+        }
 
-        let mut visited = self.visited.lock().unwrap();
-        visited.insert(*pos, cost);
+        *self.all.lock().unwrap() += cost;
     }
 
     fn cost(&self) -> usize {
-        let visited = self.visited.clone();
-        let visited = visited.lock().unwrap();
-        let cost: usize = (*visited).values().map(|v| v).sum();
-
-        cost
+        *self.all.lock().unwrap()
     }
 
     fn avg(&self) -> f64 {
@@ -124,33 +126,34 @@ impl WorldMap {
 }
 
 
-fn calc(wmap: &Arc<WorldMap>) {
-    // TODO: 有限スレッド化
-    // const THREAD: usize = 4;
-    // TODO: async/awaitを使えるなら使う
-
+fn calc(wmap: &Arc<WorldMap>, thread: usize) {
+    let keys: Vec<usize> = wmap.nodes.keys().map(|x| *x).collect();
+    let chunk_size = (keys.len() as f64 / thread as f64).ceil() as usize;
+    
     let mut handles = Vec::new();
 
-    for k in wmap.nodes.keys() {
+    for chunk in keys.chunks(chunk_size) {
         let wmap = wmap.clone();
-        let k = k.clone();
+        let chunk = chunk.to_vec();
 
         let handle = thread::spawn(move || {
-            wmap.calc(k);
+            for c in chunk {
+                wmap.calc(c);
+            }
         });
 
-        handles.push( handle );
+        handles.push(handle);
     }
 
     for handle in handles {
-        handle.join().unwrap();
+        handle.join();
     }
 }
 
 fn main() {
     let map = read_map();
     let wmap = Arc::new(WorldMap::new(&map));
-    calc(&wmap);
+    calc(&wmap, 8);
     let avg = wmap.avg();
     println!("{}", avg);
 }
@@ -203,7 +206,7 @@ mod tests {
 
         let map = make_map(s);
         let wmap = Arc::new(WorldMap::new(&map));
-        calc(&wmap);
+        calc(&wmap, 8);
         assert_eq!(wmap.cost(), 6+4+9+10+3+13);
         assert_eq!(wmap.avg(), 7.5);
     }
@@ -223,14 +226,14 @@ mod tests {
 
         let map = make_map(s);
         let wmap = Arc::new(WorldMap::new(&map));
-        calc(&wmap);
+        calc(&wmap, 8);
         assert_eq!(wmap.cost(), 850);
         assert_eq!(wmap.avg(), 23.61111111111111);
     }
 
     #[test]
     fn test_big_auto() {
-        let size: usize = 100;
+        let size: usize = 100_000;
         let mut map: Vec<Vec<String>> = Vec::new();
 
         let mut cost: usize = 0;
@@ -243,7 +246,8 @@ mod tests {
         }
 
         let wmap = Arc::new(WorldMap::new(&map));
-        calc(&wmap);
+        //println!("hoge");
+        calc(&wmap, 8);
         assert_eq!(wmap.cost(), 8670850);
         assert_eq!(wmap.avg(), 1717.0);
     }
